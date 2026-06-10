@@ -62,7 +62,7 @@ class TranscriberEngine:
     """Manages audio recording and transcription in background threads."""
 
     SAMPLE_RATE = 16000
-    CHUNK_SECONDS = 5
+    CHUNK_SECONDS = 30
 
     def __init__(self, device_index, on_text=None, on_volume=None, on_status=None):
         """
@@ -174,7 +174,7 @@ class TranscriberEngine:
             elapsed, audio_data = item
             try:
                 segments, info = self._model.transcribe(
-                    audio_data, beam_size=3, vad_filter=True
+                    audio_data, beam_size=3, vad_filter=True, language="en"
                 )
                 text_parts = []
                 for seg in segments:

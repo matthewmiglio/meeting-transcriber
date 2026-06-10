@@ -36,10 +36,11 @@ class MeetingTranscriberApp:
         self.root.minsize(600, 400)
 
         self.engine = None
-        self.output_folder = None
+        self.output_folder = load_config().get("output_folder")
         self.output_file = None
         self.is_recording = False
         self._current_volume = 0.0
+        self._record_start_time = None
         self._devices = list_input_devices()
 
         self._build_ui()
@@ -93,7 +94,11 @@ class MeetingTranscriberApp:
         tk.Button(folder_frame, text="Set Output Folder", command=self._browse_folder).pack(
             side="left"
         )
-        self.folder_label = tk.Label(folder_frame, text="(no folder selected)", fg="gray")
+        if self.output_folder:
+            folder_text, folder_color = self.output_folder, "black"
+        else:
+            folder_text, folder_color = "(no folder selected)", "gray"
+        self.folder_label = tk.Label(folder_frame, text=folder_text, fg=folder_color)
         self.folder_label.pack(side="left", padx=(10, 0))
 
         # Start / Stop button
@@ -109,6 +114,10 @@ class MeetingTranscriberApp:
             width=18,
         )
         self.start_btn.pack(side="left")
+        self.timer_label = tk.Label(
+            btn_frame, text="00:00:00", font=("Consolas", 12), fg="gray"
+        )
+        self.timer_label.pack(side="left", padx=(15, 0))
 
         # Transcript area
         text_frame = tk.Frame(self.root)
@@ -170,8 +179,11 @@ class MeetingTranscriberApp:
         )
         self.engine.start()
         self.is_recording = True
+        self._record_start_time = datetime.now()
         self.start_btn.config(text="Stop Recording", bg="#f44336")
+        self.timer_label.config(fg="black")
         self.mic_combo.config(state="disabled")
+        self._tick_timer()
         self._append_status("Recording started...")
 
     def _stop_recording(self):
@@ -180,6 +192,7 @@ class MeetingTranscriberApp:
             self.engine = None
         self.is_recording = False
         self._current_volume = 0.0
+        self._record_start_time = None
         self.start_btn.config(text="Start Recording", bg="#4caf50")
         self.mic_combo.config(state="readonly")
         self._append_status(f"Recording stopped. Transcript saved to: {self.output_file}")
@@ -213,6 +226,17 @@ class MeetingTranscriberApp:
         self.transcript_text.insert("end", f"[{message}]\n")
         self.transcript_text.see("end")
         self.transcript_text.config(state="disabled")
+
+    def _tick_timer(self):
+        """Update the recording duration label every second."""
+        if self._record_start_time is None:
+            return  # stopped — freeze on last value
+        elapsed = int((datetime.now() - self._record_start_time).total_seconds())
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+        s = elapsed % 60
+        self.timer_label.config(text=f"{h:02d}:{m:02d}:{s:02d}")
+        self.root.after(1000, self._tick_timer)
 
     def _poll_volume(self):
         """Update the volume bar on the main thread."""
