@@ -28,14 +28,20 @@ def _setup_ffmpeg():
 _setup_ffmpeg()
 
 
+_EXCLUDED_KEYWORDS = ["speaker", "stereo mix", "loopback", "output", "sound mapper"]
+
+
 def list_input_devices():
-    """Return a list of input audio devices as dicts with 'index' and 'name'."""
+    """Return a list of input audio devices, filtering out speakers/loopback."""
     devices = sd.query_devices()
     seen = set()
     result = []
     for i, dev in enumerate(devices):
         if dev["max_input_channels"] > 0:
             name = dev["name"]
+            name_lower = name.lower()
+            if any(kw in name_lower for kw in _EXCLUDED_KEYWORDS):
+                continue
             if name not in seen:
                 seen.add(name)
                 result.append({"index": i, "name": name})
