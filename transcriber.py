@@ -9,6 +9,37 @@ from datetime import datetime, timedelta
 import numpy as np
 import sounddevice as sd
 
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_LOGS_DIR = os.path.join(_APP_DIR, "logs")
+
+
+class SessionLogger:
+    """Writes terminal and GUI log lines to logs/{epoch}.log."""
+
+    def __init__(self):
+        os.makedirs(_LOGS_DIR, exist_ok=True)
+        self._epoch = int(time.time())
+        self._path = os.path.join(_LOGS_DIR, f"{self._epoch}.log")
+        self._lock = threading.Lock()
+        self._write("[SESSION START]\n")
+
+    def _write(self, text):
+        with self._lock:
+            with open(self._path, "a", encoding="utf-8") as f:
+                f.write(text)
+
+    def terminal(self, line):
+        """Log a terminal-style line (debug table rows, etc.)."""
+        self._write(f"[TERMINAL] {line}\n")
+
+    def gui(self, line):
+        """Log a GUI-style line ({HH:MM:SS} messages)."""
+        self._write(f"[GUI] {line}\n")
+
+    @property
+    def path(self):
+        return self._path
+
 # Ensure ffmpeg is on PATH for faster-whisper
 def _setup_ffmpeg():
     try:
@@ -64,26 +95,33 @@ class TranscriberEngine:
     SAMPLE_RATE = 16000
     CHUNK_SECONDS = 30
 
-    def __init__(self, device_index, on_text=None, on_volume=None, on_status=None):
+    def __init__(self, device_index, on_text=None, on_volume=None, on_status=None, logger=None):
         """
         Args:
             device_index: sounddevice input device index.
             on_text: callback(timestamp_str, text) called from transcription thread.
             on_volume: callback(float 0.0-1.0) called from audio callback thread.
             on_status: callback(str) for status messages like 'Loading model...'.
+            logger: SessionLogger instance for file logging.
         """
         self.device_index = device_index
         self.on_text = on_text or (lambda ts, txt: None)
         self.on_volume = on_volume or (lambda v: None)
         self.on_status = on_status or (lambda s: None)
+        self.logger = logger or SessionLogger()
 
         self._model = None
         self._audio_queue = queue.Queue()
         self._recording = threading.Event()
         self._record_thread = None
         self._transcribe_thread = None
+        self._status_thread = None
         self._start_time = None
         self._chunk_counter = 0
+
+        # Debug tracking
+        self._recording_elapsed = 0.0  # how far the recorder has captured
+        self._transcribing_range = ""  # e.g. "00:00:00->00:00:30"
 
     def start(self):
         """Start recording and transcription."""
@@ -93,8 +131,10 @@ class TranscriberEngine:
 
         self._record_thread = threading.Thread(target=self._record_loop, daemon=True)
         self._transcribe_thread = threading.Thread(target=self._transcribe_loop, daemon=True)
+        self._status_thread = threading.Thread(target=self._status_loop, daemon=True)
         self._record_thread.start()
         self._transcribe_thread.start()
+        self._status_thread.start()
 
     def stop(self):
         """Stop recording and transcription. Blocks until threads finish."""
@@ -104,6 +144,28 @@ class TranscriberEngine:
             self._record_thread.join(timeout=5)
         if self._transcribe_thread and self._transcribe_thread.is_alive():
             self._transcribe_thread.join(timeout=10)
+
+    def _status_loop(self):
+        """Print a debug status table to the terminal every 5 seconds."""
+        header = f"{'current-time':>16} | {'transcribing-moment':<30} | {'recording-moment':>16} | {'queue':>5}"
+        separator = f"{'-'*16}-+-{'-'*30}-+-{'-'*16}-+-{'-'*5}"
+        print()
+        print(header)
+        print(separator)
+        self.logger.terminal(header)
+        self.logger.terminal(separator)
+
+        while self._recording.is_set():
+            now_elapsed = (datetime.now() - self._start_time).total_seconds()
+            current = format_timestamp(now_elapsed)
+            recording = format_timestamp(self._recording_elapsed)
+            transcribing = self._transcribing_range or "not started"
+            q_size = self._audio_queue.qsize()
+
+            line = f"{current:>16} | {transcribing:<30} | {recording:>16} | {q_size:>5}"
+            print(line)
+            self.logger.terminal(line)
+            time.sleep(5)
 
     def _record_loop(self):
         """Capture audio from the mic and enqueue chunks for transcription."""
@@ -126,6 +188,7 @@ class TranscriberEngine:
             if buffer_samples >= chunk_size:
                 chunk = np.concatenate(buffer)
                 elapsed = (datetime.now() - self._start_time).total_seconds()
+                self._recording_elapsed = elapsed
                 self._audio_queue.put((elapsed, chunk))
                 buffer = []
                 buffer_samples = 0
@@ -172,6 +235,9 @@ class TranscriberEngine:
                 break
 
             elapsed, audio_data = item
+            chunk_duration = len(audio_data) / self.SAMPLE_RATE
+            chunk_start = elapsed - chunk_duration
+            self._transcribing_range = f"{format_timestamp(chunk_start)}->{format_timestamp(elapsed)}"
             try:
                 segments, info = self._model.transcribe(
                     audio_data, beam_size=3, vad_filter=True, language="en"
@@ -184,5 +250,10 @@ class TranscriberEngine:
                 if text:
                     ts = format_timestamp(elapsed)
                     self.on_text(ts, text)
+                else:
+                    msg = f"  [no speech detected in chunk {self._transcribing_range}]"
+                    print(msg)
+                    self.logger.terminal(msg)
+                self._transcribing_range = f"idle (done thru {format_timestamp(elapsed)})"
             except Exception as e:
                 self.on_status(f"Transcription error: {e}")

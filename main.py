@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 from datetime import datetime
 
-from transcriber import list_input_devices, TranscriberEngine
+from transcriber import list_input_devices, TranscriberEngine, SessionLogger
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -36,6 +36,7 @@ class MeetingTranscriberApp:
         self.root.minsize(600, 400)
 
         self.engine = None
+        self._logger = None
         self.output_folder = load_config().get("output_folder")
         self.output_file = None
         self.is_recording = False
@@ -144,6 +145,7 @@ class MeetingTranscriberApp:
         if folder:
             self.output_folder = folder
             self.folder_label.config(text=folder, fg="black")
+            save_config({"output_folder": folder})
 
     def _toggle_recording(self):
         if not self.is_recording:
@@ -170,12 +172,14 @@ class MeetingTranscriberApp:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_file = os.path.join(self.output_folder, f"transcript_{ts}.txt")
 
-        # Create engine
+        # Create logger and engine
+        self._logger = SessionLogger()
         self.engine = TranscriberEngine(
             device_index=device_index,
             on_text=self._on_text,
             on_volume=self._on_volume,
             on_status=self._on_status,
+            logger=self._logger,
         )
         self.engine.start()
         self.is_recording = True
@@ -221,11 +225,25 @@ class MeetingTranscriberApp:
             with open(self.output_file, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
+        if self._logger:
+            self._logger.gui(line)
+
     def _append_status(self, message):
+        if self._record_start_time:
+            elapsed = int((datetime.now() - self._record_start_time).total_seconds())
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            s = elapsed % 60
+            ts = f"{{{h:02d}:{m:02d}:{s:02d}}}"
+        else:
+            ts = "{00:00:00}"
         self.transcript_text.config(state="normal")
-        self.transcript_text.insert("end", f"[{message}]\n")
+        self.transcript_text.insert("end", f"{ts} {message}\n")
         self.transcript_text.see("end")
         self.transcript_text.config(state="disabled")
+
+        if self._logger:
+            self._logger.gui(f"{ts} {message}")
 
     def _tick_timer(self):
         """Update the recording duration label every second."""

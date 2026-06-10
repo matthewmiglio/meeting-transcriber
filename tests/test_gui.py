@@ -28,8 +28,9 @@ def test_mic_dropdown_populated(app):
     assert len(values) >= 0  # don't fail on CI with no mic
 
 
-def test_output_folder_default_empty(app):
-    assert app.output_folder is None
+def test_output_folder_loads_from_config(app):
+    # output_folder is either None (no config) or a saved string
+    assert app.output_folder is None or isinstance(app.output_folder, str)
 
 
 def test_start_button_exists(app):
@@ -52,7 +53,7 @@ def test_append_status(app):
     app.transcript_text.config(state="normal")
     content = app.transcript_text.get("1.0", "end").strip()
     app.transcript_text.config(state="disabled")
-    assert "Test message" in content
+    assert "{00:00:00} Test message" in content
 
 
 def test_append_transcript(app):
