@@ -95,7 +95,8 @@ class TranscriberEngine:
     SAMPLE_RATE = 16000
     CHUNK_SECONDS = 30
 
-    def __init__(self, device_index, on_text=None, on_volume=None, on_status=None, logger=None):
+    def __init__(self, device_index, on_text=None, on_volume=None, on_status=None,
+                 logger=None, audio_save_path=None):
         """
         Args:
             device_index: sounddevice input device index.
@@ -103,12 +104,15 @@ class TranscriberEngine:
             on_volume: callback(float 0.0-1.0) called from audio callback thread.
             on_status: callback(str) for status messages like 'Loading model...'.
             logger: SessionLogger instance for file logging.
+            audio_save_path: if set, save recorded audio to this .mp3 path.
         """
         self.device_index = device_index
         self.on_text = on_text or (lambda ts, txt: None)
         self.on_volume = on_volume or (lambda v: None)
         self.on_status = on_status or (lambda s: None)
         self.logger = logger or SessionLogger()
+        self._audio_save_path = audio_save_path
+        self._all_audio = [] if audio_save_path else None
 
         self._model = None
         self._audio_queue = queue.Queue()
@@ -144,6 +148,48 @@ class TranscriberEngine:
             self._record_thread.join(timeout=5)
         if self._transcribe_thread and self._transcribe_thread.is_alive():
             self._transcribe_thread.join(timeout=10)
+        self._save_audio()
+
+    def _save_audio(self):
+        """Encode accumulated audio to mp3 if saving was enabled."""
+        if self._all_audio is None or not self._audio_save_path:
+            return
+        if not self._all_audio:
+            return
+        try:
+            import subprocess
+            import tempfile
+            import imageio_ffmpeg
+
+            audio = np.concatenate(self._all_audio)
+            # Write raw PCM to a temp .wav, then convert to mp3 via ffmpeg
+            wav_path = self._audio_save_path.replace(".mp3", ".tmp.wav")
+            import wave
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(self.SAMPLE_RATE)
+                pcm = (audio * 32767).astype(np.int16).tobytes()
+                wf.writeframes(pcm)
+
+            # Find ffmpeg
+            try:
+                ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            except AttributeError:
+                ffmpeg_exe = os.path.join(
+                    imageio_ffmpeg.__path__[0] if hasattr(imageio_ffmpeg, '__path__') else os.path.dirname(imageio_ffmpeg.__file__),
+                    "binaries", "ffmpeg.exe"
+                )
+
+            subprocess.run(
+                [ffmpeg_exe, "-y", "-i", wav_path,
+                 "-acodec", "libmp3lame", "-q:a", "2", self._audio_save_path],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            os.remove(wav_path)
+            self.on_status(f"Audio saved to: {self._audio_save_path}")
+        except Exception as e:
+            self.on_status(f"Failed to save audio: {e}")
 
     def _status_loop(self):
         """Print a debug status table to the terminal every 5 seconds."""
@@ -184,6 +230,8 @@ class TranscriberEngine:
 
             buffer.append(data)
             buffer_samples += len(data)
+            if self._all_audio is not None:
+                self._all_audio.append(data)
 
             if buffer_samples >= chunk_size:
                 chunk = np.concatenate(buffer)

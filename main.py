@@ -102,6 +102,14 @@ class MeetingTranscriberApp:
         self.folder_label = tk.Label(folder_frame, text=folder_text, fg=folder_color)
         self.folder_label.pack(side="left", padx=(10, 0))
 
+        # Save audio checkbox
+        self.save_audio_var = tk.BooleanVar(value=load_config().get("save_audio", False))
+        self.save_audio_check = tk.Checkbutton(
+            self.root, text="Save audio (.mp3)", variable=self.save_audio_var,
+            command=self._on_save_audio_toggled,
+        )
+        self.save_audio_check.pack(anchor="w", padx=10, pady=(2, 0))
+
         # Start / Stop button
         btn_frame = tk.Frame(self.root)
         btn_frame.pack(fill="x", **pad)
@@ -134,6 +142,9 @@ class MeetingTranscriberApp:
         )
         self.transcript_text.pack(fill="both", expand=True)
         self.scrollbar.config(command=self.transcript_text.yview)
+
+    def _on_save_audio_toggled(self):
+        save_config({"save_audio": self.save_audio_var.get()})
 
     def _on_mic_selected(self, event=None):
         idx = self.mic_combo.current()
@@ -172,6 +183,11 @@ class MeetingTranscriberApp:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_file = os.path.join(self.output_folder, f"transcript_{ts}.txt")
 
+        # Audio save path
+        audio_path = None
+        if self.save_audio_var.get():
+            audio_path = os.path.join(self.output_folder, f"recording_{ts}.mp3")
+
         # Create logger and engine
         self._logger = SessionLogger()
         self.engine = TranscriberEngine(
@@ -180,6 +196,7 @@ class MeetingTranscriberApp:
             on_volume=self._on_volume,
             on_status=self._on_status,
             logger=self._logger,
+            audio_save_path=audio_path,
         )
         self.engine.start()
         self.is_recording = True
